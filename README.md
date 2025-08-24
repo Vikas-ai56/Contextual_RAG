@@ -2,6 +2,7 @@
 
 <!-- Optional: Add some badges for a professional look -->
 ![Python Version](https://img.shields.io/badge/python-3.11-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
 
 This project implements a sophisticated **Contextual Retrieval-Augmented Generation (C-RAG)** system built with Python and LangGraph. It moves beyond simple document retrieval by creating a stateful, interactive agent that engages with the user to deeply understand their query's context before providing a final, evidence-based answer.
