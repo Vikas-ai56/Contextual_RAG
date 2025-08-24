@@ -20,6 +20,8 @@ from langsmith import traceable
 import asyncio
 import time
 import aiohttp
+import numpy as np
+from bm210 import BM25Okapi
 
 load_dotenv()
 class ContextualizedRAG:
@@ -262,11 +264,11 @@ class ContextualizedRAG:
         error_message = state.get("error", [True, "Unknown error"])[1]
         return {"final_response": f"Could not continue the process due to the following error:\n{error_message}"}
 
+
     @traceable
     def _retrieve_and_grade(self, state):
         """
-        Executes the retrieval plan, searches for child chunks,
-        and returns the content of their unique parents.
+        executes hybrid retrieval --  dense using vector embeddings and sparse retrieval using BM25), and then merges scores, and returns the top ranked chunks.
         """
         data = OverallState(**state)
         search_queries = data["search_queries"]
@@ -278,56 +280,58 @@ class ContextualizedRAG:
             model="embed-english-v3.0",
             input_type="search_query",
             embedding_types=["float"]
-        )
-
-        query_embeddings = query_embeddings.embeddings.float
+        ).embeddings.float
 
         retrieved_results = self.collection.query(
             query_embeddings=query_embeddings,
-            n_results=12,
-            include=["documents","metadatas"],
+            n_results=20,
+            include=["documents","metadatas","distances"],
         )
 
-        try:
-            # Flatten the lists of lists returned by ChromaDB
-            all_metadatas = [item for sublist in retrieved_results["metadatas"] for item in sublist]
-            all_documents = [item for sublist in retrieved_results["documents"] for item in sublist]
-            
-            docs_for_reranking = []
-            for i, meta in enumerate(all_metadatas):
-                if meta.get("content_type") == "paragraph":
-                    # Assuming 'full_parent_content' is a key in your metadata
-                    docs_for_reranking.append(meta.get("full_parent_content", ""))
-                else:
-                    docs_for_reranking.append(all_documents[i])
-             
-        except Exception as e:
-            print(f"[ERROR]: {e}")
-            return {"top_chunks": []}
-        
+        all_metadatas = [item for sublist in retrieved_results["metadatas"] for item in sublist]
+        all_documents = [item for sublist in retrieved_results["documents"] for item in sublist]
+        all_distances = [item for sublist in retrieved_results["distances"] for item in sublist]
+
+
+        #dense retrieval
+        dense_scores = [1 - d for d in all_distances]
+
+        #BM25 Retrieval
+        tokenized_corpus = [doc.split() for doc in all_documents]
+        bm25 = BM25Okapi(tokenized_corpus)
+
+        #averaging the BM25 scores across multiple queries
+        sparse_scores = []
         for query in search_queries:
-            reranked_results = self.cohere_client.rerank(
-                model="rerank-v3.5",
-                query=query,
-                documents=docs_for_reranking,
-                top_n=4
-            )
+            tokenized_query = query.split()
+            scores = bm25.get_scores(tokenized_query)
+            sparse_scores.append(scores)
+        sparse_scores = np.mean(np.array(sparse_scores), axis=0).tolist()
 
-            for result in reranked_results.results:
-                final_results.append(
-                    [
-                        result.relevance_score, 
-                        query,
-                        docs_for_reranking[result.index]
-                    ]
-                )
+        #hybrid merge
+        def normalize(arr):
+            arr = np.array(arr)
+            if arr.max() == arr.min():
+                return np.ones_like(arr) * 0.5
+            return (arr - arr.min()) / (arr.max() - arr.min())
 
-        # Sort in descending order
-        final_results.sort(key=lambda x:-x[0])
-        state["top_chunks"] = final_results
+        dense_norm = normalize(dense_scores)
+        sparse_norm = normalize(sparse_scores)
+
+        # taking weighted average, and giving more weight to dense scores, but this can be tuned
+        # based on the use case
+        hybrid_scores = 0.6 * dense_norm + 0.4 * sparse_norm
+
+        #collect top results
+        for score, query, doc in zip(hybrid_scores, search_queries*len(all_documents), all_documents):
+            final_results.append([float(score), query, doc])
+
+        #sort by hybrid score
+        final_results.sort(key=lambda x: -x[0])
+        state["top_chunks"] = final_results[:12]  # keep top 12
 
         return state
-
+    
     @traceable
     def _generate_answer(self, state):
         """
