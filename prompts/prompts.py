@@ -12,7 +12,7 @@ the response
 {user_response_to_rqs}
 </resoning_response>
         
-Generate search queries based on the information obtained by the user.
+Generate search queries (maximum of 5) based on the information obtained by the user.
 
 --- EXAMPLE 1 ---
 "reasoning_sub_questions" : [What was the exact name of the medical procedure you had?,
@@ -58,7 +58,7 @@ Generate "Reasoning Queries". These are clarifying questions a human analyst wou
 need to ask the user to gather all necessary information. They should probe for potential 
 policy exclusions, waiting periods, and network status.
 
-IMPORTANT:- the queries you generate **MUST** be in very simple english.
+IMPORTANT:- the queries you generate **MUST** be in very simple english and also make sure you do not ask more than 5-6 reasoning query
 
 Example-1
 "user_query": "I want to reimburse my insurance amount for liver treatment."
