@@ -13,17 +13,14 @@ import openai
 import cohere
 import logging
 import chromadb
-from langgraph.types import interrupt, Command
+from langgraph.types import interrupt
 from langchain.output_parsers import PydanticOutputParser
 from langsmith.wrappers import wrap_openai
 from langsmith import traceable
-import asyncio
-import time
-import aiohttp
 
 load_dotenv()
 class ContextualizedRAG:
-    def __init__(self, collection_name: str = None):
+    def __init__(self):
         
         settings = Settings()
         self.key = settings.llm.api_key
@@ -44,7 +41,6 @@ class ContextualizedRAG:
 
         self.doc_intel_client = DocumentIntelligenceService()
 
-        # chroma client
         client = chromadb.HttpClient(
         ssl=True,
         host='api.trychroma.com',
@@ -67,7 +63,6 @@ class ContextualizedRAG:
         Uses Microsoft Document Intelligence to retrieve information in markdown format.
         Chunks the retrieved context into parent chunk and it's child chunk
         """
-
         analysis_result = await self.doc_intel_client.analyze(pdf_blob_url, True)
         markdown_content = analysis_result["analyzeResult"]["content"]
 
@@ -81,7 +76,6 @@ class ContextualizedRAG:
         """
         Generates embeddings for the summaries using Cohere and stores them in ChromaDB.
         """
-
         logging.info(f"Generating Vector embeddings for {len(processed_docs)} summaries...")
         content_to_embed = [ele['content'] for ele in processed_docs]
 
@@ -154,9 +148,7 @@ class ContextualizedRAG:
         Parses the question and generates a few reasoning and clarification
         query.
         """
-
         parser = PydanticOutputParser(pydantic_object=ReasoningQueryPlan)
-
         planner_prompt = PLANNER_PROMPT
         
         formatted_examples = ""
@@ -189,7 +181,7 @@ class ContextualizedRAG:
             return plan
         
         except Exception as e:
-            print("Planning failed")
+            print("Reasoning questions planning failed")
 
     def _human_in_loop(self, state):
         plan = SearchQueryPlan(**state)
@@ -302,7 +294,7 @@ class ContextualizedRAG:
                     docs_for_reranking.append(all_documents[i])
              
         except Exception as e:
-            print(f"[ERROR]: {e}")
+            print(f"[ERROR in R_and_G]: {e}")
             return {"top_chunks": []}
         
         for query in search_queries:
@@ -339,12 +331,17 @@ class ContextualizedRAG:
         data = OverallState(**state)
         user_query = data["user_query"]
         no_chunks = 0
-        final_results = []
+        final_results = ""
+
+        if data["top_chunks"] is None:
+            return {"final_response": "I could not find any relevant information in the document to answer your question."}
+
 
         # currently omitting the threshold factor
         for score, q, content in data["top_chunks"]:
             if no_chunks < 5:
-                final_results.append(content)
+                final_results += content
+                final_results += "\n----\n"
                 no_chunks += 1
             else:
                 break
@@ -355,20 +352,25 @@ class ContextualizedRAG:
             # else:
             #     break
 
-        retries = 0
-
-        while retries < 2:
+        for attempt in range(2):
             generator_prompt = GENERATOR_PROMPT.format(user_query = user_query, final_results = final_results)
-            retries += 1
             
             try:
                 response = self.llm_client.chat.completions.create(
-                    model="gemini-2.5-pro", # Better to use a heavy model like 2.5-pro
+                    model="gemini-2.5-pro", 
                     messages=[{'role':'user', 'content': generator_prompt}],
                     temperature=0.25, 
                 )
-                return {"final_response":response.choices[0].message.content}
+                
+                answer = response.choices[0].message.content
+
+                if answer:
+                    return {"final_response":answer}
+                else:
+                    print(f"[WARN] Attempt {attempt + 1}: LLM returned an empty response.")
             
             except Exception as e:
                 print(f"[ERROR]: {e}")
-                return {"final_response":"An error occurred while generating the final answer."}
+
+        print("[ERROR] All attempts to generate an answer failed.")        
+        return {"final_response":"An error occurred while generating the final answer."}
